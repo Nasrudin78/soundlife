@@ -3,10 +3,11 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
+import 'cast.dart';
 import 'models.dart';
 import 'volume.dart';
 
-/// Una entrada de la lista que se entrega al reproductor nativo.
+/// Una entrada de la lista de reproducción: un sonido dentro de un paso.
 class _Entry {
   final SoundItem sound;
   final int stepIndex;
@@ -15,13 +16,18 @@ class _Entry {
   _Entry(this.sound, this.stepIndex, this.repetition, this.repeats);
 }
 
-/// Reproductor único de la app (sonido suelto o cola), con servicio en primer plano
-/// para seguir sonando con la pantalla apagada.
+/// Reproductor único de la app (sonido suelto o cola), en el móvil o en un dispositivo DLNA.
 ///
-/// Las colas se entregan enteras a just_audio: el paso de un audio al siguiente lo hace
-/// el reproductor nativo sin cortes. Un paso con N repeticiones son N entradas seguidas;
-/// el último paso infinito es una entrada que se pone en LoopMode.one al llegar a ella.
+/// En el móvil, las colas se entregan enteras a just_audio: el paso de un audio al siguiente lo hace
+/// el reproductor nativo sin cortes, con servicio en primer plano para la pantalla apagada.
+/// Un paso con N repeticiones son N entradas seguidas; el último paso infinito es una entrada
+/// que se pone en LoopMode.one al llegar a ella.
+///
+/// En un dispositivo DLNA solo se puede enviar un fichero cada vez: se consulta su estado cada
+/// segundo y, al terminar, se lanza la entrada siguiente con la misma regla.
 class PlaybackController extends ChangeNotifier {
+  static const Duration _pollInterval = Duration(seconds: 1);
+
   final AudioPlayer _player = AudioPlayer();
   final List<StreamSubscription> _subs = [];
 
@@ -30,9 +36,25 @@ class PlaybackController extends ChangeNotifier {
   int? _index;
   bool _paused = false;
 
+  // Destino remoto (null = este móvil)
+  CastDevice? _target;
+  CastRenderer? _renderer;
+  Timer? _poll;
+  bool _polling = false;
+  bool _remoteStarted = false; // el dispositivo ya reprodujo la entrada actual
+  int _pollFailures = 0;
+
+  /// Se llama cuando falla el dispositivo remoto y se vuelve al móvil.
+  void Function(String message)? onCastError;
+
   PlaybackController() {
-    _subs.add(_player.currentIndexStream.listen(_onIndexChanged));
+    CastNative.init();
+    CastNative.onStopRequested = () => disconnect(resumeLocally: false);
+    _subs.add(_player.currentIndexStream.listen((i) {
+      if (_renderer == null) _onIndexChanged(i);
+    }));
     _subs.add(_player.playerStateStream.listen((state) {
+      if (_renderer != null) return;
       if (state.processingState == ProcessingState.completed) {
         _clear();
         return;
@@ -49,6 +71,7 @@ class PlaybackController extends ChangeNotifier {
   bool get isActive => currentSound != null;
   bool get isPaused => _paused;
   SoundQueue? get queue => _queue;
+  CastDevice? get target => _target;
   bool get hasNext => _queue != null && _index != null && _nextStepStart(_index!) != null;
 
   /// "Paso 2/4 · 1/2" para colas, null para sonidos sueltos.
@@ -63,27 +86,22 @@ class PlaybackController extends ChangeNotifier {
 
   bool isCurrent(SoundItem sound) => currentSound?.filePath == sound.filePath;
 
-  MediaItem _mediaItem(SoundItem sound, String id, {String? album}) => MediaItem(
-        id: id,
-        title: sound.displayName,
-        album: album ?? 'SoundLife',
-        artUri: sound.coverPath != null && File(sound.coverPath!).existsSync()
-            ? Uri.file(sound.coverPath!)
-            : (sound.coverUrl != null ? Uri.parse(sound.coverUrl!) : null),
+  MediaItem _mediaItem(_Entry e) => MediaItem(
+        id: '${_queue?.id ?? 'single'}/${e.stepIndex}/${e.repetition}/${e.sound.filePath}',
+        title: e.sound.displayName,
+        album: _queue?.name ?? 'SoundLife',
+        artUri: e.sound.coverPath != null && File(e.sound.coverPath!).existsSync()
+            ? Uri.file(e.sound.coverPath!)
+            : (e.sound.coverUrl != null ? Uri.parse(e.sound.coverUrl!) : null),
       );
 
   Future<void> playSound(SoundItem sound) async {
-    await _load(
-      [_Entry(sound, 0, 1, sound.loopMode ? 0 : 1)],
-      [AudioSource.file(sound.filePath, tag: _mediaItem(sound, sound.filePath))],
-      queue: null,
-    );
+    await _load([_Entry(sound, 0, 1, sound.loopMode ? 0 : 1)], queue: null);
   }
 
   /// [sounds] resuelve cada paso por nombre de fichero; los pasos sin sonido se saltan.
   Future<void> playQueue(SoundQueue queue, Map<String, SoundItem> sounds) async {
     final entries = <_Entry>[];
-    final sources = <AudioSource>[];
     for (var s = 0; s < queue.steps.length; s++) {
       final step = queue.steps[s];
       final sound = sounds[step.fileName];
@@ -94,25 +112,34 @@ class PlaybackController extends ChangeNotifier {
       final copies = repeats == 0 ? 1 : repeats;
       for (var r = 1; r <= copies; r++) {
         entries.add(_Entry(sound, s, r, repeats));
-        sources.add(AudioSource.file(
-          sound.filePath,
-          tag: _mediaItem(sound, '${queue.id}/$s/$r', album: queue.name),
-        ));
       }
     }
     if (entries.isEmpty) return;
-    await _load(entries, sources, queue: queue);
+    await _load(entries, queue: queue);
   }
 
-  Future<void> _load(List<_Entry> entries, List<AudioSource> sources, {required SoundQueue? queue}) async {
-    await _player.stop();
+  Future<void> _load(List<_Entry> entries, {required SoundQueue? queue}) async {
     _entries = entries;
     _queue = queue;
     _index = null;
     _paused = false;
+    if (_renderer != null) {
+      await _playRemote(0);
+    } else {
+      await _loadLocal(0);
+    }
+  }
+
+  Future<void> _loadLocal(int initialIndex) async {
+    await _player.stop();
+    _index = null;
+    _paused = false;
     await _player.setLoopMode(LoopMode.off);
-    await _player.setAudioSources(sources, initialIndex: 0);
-    await _onIndexChanged(0);
+    await _player.setAudioSources(
+      [for (final e in _entries) AudioSource.file(e.sound.filePath, tag: _mediaItem(e))],
+      initialIndex: initialIndex,
+    );
+    await _onIndexChanged(initialIndex);
     notifyListeners();
     // play() no termina hasta que se pausa, así que no se espera
     unawaited(_player.play());
@@ -142,31 +169,218 @@ class PlaybackController extends ChangeNotifier {
   Future<void> nextStep() async {
     final next = _index == null ? null : _nextStepStart(_index!);
     if (next == null) return;
-    await _player.seek(Duration.zero, index: next);
+    if (_renderer != null) {
+      await _playRemote(next);
+    } else {
+      await _player.seek(Duration.zero, index: next);
+    }
   }
 
-  Future<void> pause() => _player.pause();
+  Future<void> pause() async {
+    if (_renderer != null) {
+      await _remote(() => _renderer!.pause());
+      _paused = true;
+      notifyListeners();
+    } else {
+      await _player.pause();
+    }
+  }
 
   Future<void> resume() async {
     final sound = currentSound;
-    if (sound != null) await DeviceVolume.set(sound.volumePreset);
-    unawaited(_player.play());
+    if (_renderer != null) {
+      await _remote(() async {
+        if (sound != null) await _renderer!.setVolume(sound.volumePreset);
+        await _renderer!.play();
+      });
+      _paused = false;
+      notifyListeners();
+    } else {
+      if (sound != null) await DeviceVolume.set(sound.volumePreset);
+      unawaited(_player.play());
+    }
   }
 
   Future<void> stop() async {
-    await _player.stop();
+    if (_renderer != null) {
+      await _remote(() => _renderer!.stop());
+    } else {
+      await _player.stop();
+    }
     _clear();
+  }
+
+  /// Volumen en vivo mientras se mueve el deslizador del preset.
+  Future<void> previewVolume(double volume) async {
+    if (_renderer != null) {
+      await _remote(() => _renderer!.setVolume(volume));
+    } else {
+      await DeviceVolume.set(volume);
+    }
   }
 
   /// Aplica en vivo un cambio de preset del sonido actual.
   Future<void> applyPreset(SoundItem sound) async {
     if (!isCurrent(sound)) return;
-    await DeviceVolume.set(sound.volumePreset);
+    await previewVolume(sound.volumePreset);
     if (_queue == null) {
       _entries = [_Entry(sound, 0, 1, sound.loopMode ? 0 : 1)];
-      await _player.setLoopMode(sound.loopMode ? LoopMode.one : LoopMode.off);
+      _index = 0;
+      if (_renderer == null) await _player.setLoopMode(sound.loopMode ? LoopMode.one : LoopMode.off);
     }
     notifyListeners();
+  }
+
+  // ---------------------------------------------------------------- Casting
+
+  /// Envía la reproducción a [device]. Si algo suena, sigue allí desde el principio de la entrada actual.
+  /// Lanza una excepción si no hay WiFi.
+  Future<void> connect(CastDevice device) async {
+    if (_target?.id == device.id) return;
+    if (_renderer != null) await disconnect(resumeLocally: false, keepQueue: true);
+
+    await MediaServer.instance.start();
+    final wasPlaying = _entries.isNotEmpty && !_paused;
+    final resumeAt = _index ?? 0;
+    await _player.stop();
+
+    _target = device;
+    _renderer = CastRenderer.forDevice(device);
+    _pollFailures = 0;
+    await CastNative.requestNotificationPermission();
+    await CastNative.startService(device.name);
+    _poll = Timer.periodic(_pollInterval, (_) => _pollRemote());
+    notifyListeners();
+
+    if (_entries.isNotEmpty) await _playRemote(resumeAt, forceVolume: true, autoplay: wasPlaying);
+  }
+
+  /// Vuelve al móvil. Con [resumeLocally], lo que sonaba sigue aquí.
+  Future<void> disconnect({bool resumeLocally = true, bool keepQueue = false}) async {
+    final renderer = _renderer;
+    if (renderer == null) return;
+    final wasPlaying = _entries.isNotEmpty && !_paused;
+    final resumeAt = _index ?? 0;
+
+    _poll?.cancel();
+    _poll = null;
+    _renderer = null;
+    _target = null;
+    try {
+      await renderer.stop();
+    } catch (_) {}
+    await CastNative.stopService();
+    await MediaServer.instance.stop();
+
+    if (resumeLocally && wasPlaying) {
+      await _loadLocal(resumeAt);
+    } else if (!keepQueue) {
+      _clear();
+    }
+    notifyListeners();
+  }
+
+  Future<void> _playRemote(int index, {bool forceVolume = false, bool autoplay = true}) async {
+    if (_renderer == null || index >= _entries.length) return;
+    final previous = _index != null && _index! < _entries.length ? _entries[_index!] : null;
+    final entry = _entries[index];
+    _index = index;
+    _paused = !autoplay;
+    _remoteStarted = false;
+    notifyListeners();
+    await _remote(() async {
+      await _renderer!.load(entry.sound);
+      if (forceVolume || previous == null || previous.stepIndex != entry.stepIndex) {
+        await _renderer!.setVolume(entry.sound.volumePreset);
+      }
+      if (autoplay) await _renderer!.play();
+    });
+  }
+
+  Future<void> _pollRemote() async {
+    final renderer = _renderer;
+    if (renderer == null || _polling || _entries.isEmpty || _index == null) return;
+    _polling = true;
+    try {
+      final state = await renderer.transportState();
+      _pollFailures = 0;
+      if (renderer != _renderer) return;
+      switch (state) {
+        case 'PLAYING':
+          _remoteStarted = true;
+          if (_paused) {
+            _paused = false;
+            notifyListeners();
+          }
+        case 'PAUSED_PLAYBACK':
+          if (!_paused) {
+            _paused = true;
+            notifyListeners();
+          }
+        case 'STOPPED':
+        case 'NO_MEDIA_PRESENT':
+          // Fin del fichero: siguiente entrada (o la misma si es infinita)
+          if (_remoteStarted && !_paused) await _advanceRemote();
+      }
+    } catch (e) {
+      // Un fallo puntual se tolera; varios seguidos = dispositivo perdido (o cambió de puerto)
+      if (++_pollFailures >= 5) {
+        _pollFailures = 0;
+        if (!await _recover()) await _castFailed(e);
+      }
+    } finally {
+      _polling = false;
+    }
+  }
+
+  Future<void> _advanceRemote() async {
+    final i = _index!;
+    if (_entries[i].repeats == 0) {
+      await _playRemote(i);
+    } else if (i + 1 < _entries.length) {
+      await _playRemote(i + 1);
+    } else {
+      _clear();
+    }
+  }
+
+  Future<void> _remote(Future<void> Function() action) async {
+    try {
+      await action();
+    } catch (e) {
+      debugPrint('Cast: $e');
+      // Reintento único tras volver a localizar el dispositivo
+      if (await _recover()) {
+        try {
+          await action();
+          return;
+        } catch (e2) {
+          await _castFailed(e2);
+          return;
+        }
+      }
+      await _castFailed(e);
+    }
+  }
+
+  /// Algunos altavoces (LinkPlay/GGMM) reinician su servidor UPnP en otro puerto:
+  /// se busca de nuevo el mismo dispositivo y, si aparece, se sigue con sus nuevas direcciones.
+  Future<bool> _recover() async {
+    final target = _target;
+    if (target == null) return false;
+    final fresh = await CastDiscovery.find(target.id);
+    if (fresh == null || _target?.id != target.id) return false;
+    debugPrint('Cast: ${fresh.name} localizado de nuevo en ${fresh.avTransport}');
+    _target = fresh;
+    _renderer = CastRenderer.forDevice(fresh);
+    return true;
+  }
+
+  Future<void> _castFailed(Object error) async {
+    final name = _target?.name ?? 'el dispositivo';
+    debugPrint('Cast error: $error');
+    await disconnect(resumeLocally: false);
+    onCastError?.call('Se perdió la conexión con $name. La reproducción se ha detenido.');
   }
 
   void _clear() {
@@ -183,7 +397,10 @@ class PlaybackController extends ChangeNotifier {
     for (final s in _subs) {
       s.cancel();
     }
+    _poll?.cancel();
     _player.dispose();
+    MediaServer.instance.stop();
+    CastNative.stopService();
     super.dispose();
   }
 }

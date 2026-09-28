@@ -18,7 +18,8 @@ SoundLife es una app Flutter (pensada sobre todo para Android) que reproduce los
    - Al empezar cada paso se aplica el volumen del preset de su sonido. Dentro de un mismo paso (sus repeticiones) no se vuelve a aplicar, por si has cambiado el volumen a mano. El *Loop mode* del preset no se usa en las colas: lo que manda son las repeticiones de cada paso.
    - Mientras suena, la barra de abajo muestra, por ejemplo, "Paso 2/4 · 1/2" y tiene un botón para saltar al paso siguiente.
 
-7. **Menú ⋮**: muestra la versión instalada, que se lee de `pubspec.yaml`. La barra de arriba muestra solo "SoundLife".
+7. **Enviar a otro dispositivo** (botón cast): ver la sección de abajo.
+8. **Menú ⋮**: "Actualizar carátulas y nombres" y la versión instalada, que se lee de `pubspec.yaml`. La barra de arriba muestra solo "SoundLife".
 
 ## Pantalla apagada y modo avión
 
@@ -26,12 +27,28 @@ SoundLife es una app Flutter (pensada sobre todo para Android) que reproduce los
 - El reproductor recibe la cola entera de golpe: el paso de un audio al siguiente lo hace él mismo, sin cortes y sin depender de que la interfaz esté abierta.
 - No necesita internet: los audios y las carátulas están guardados en el móvil.
 
+## Enviar a otros dispositivos (Sonos, Smart TV, GGMM…)
+
+Con el móvil conectado al **WiFi de casa** (no hace falta internet), el botón cast busca durante unos segundos los reproductores **DLNA/UPnP** de la red. Sonos, la mayoría de Smart TV y altavoces LinkPlay como el GGMM E2 lo son.
+- **Sonos, TV y demás DLNA**: se controlan por DLNA (SOAP: `SetAVTransportURI`, `Play`, `SetVolume`…).
+- **Altavoces WiiMu/LinkPlay** (como el GGMM E2): se reconocen por el fabricante que anuncian y se controlan con **su API HTTP propia** (`/httpapi.asp?command=setPlayerCmd:…`). Es la misma que usan sus apps oficiales. Su DLNA se cuelga al recibir `Play` en firmwares antiguos: comprobado en el GGMM, firmware 4.2.7124 de 2019.
+- Al elegir uno, lo que suena pasa a ese dispositivo desde el principio del audio actual, con su título y su carátula. Con "Este móvil" vuelve al teléfono.
+- **Volumen**: el preset (0–100 %) fija el volumen del altavoz, que es el equivalente a su botón físico. En las colas se aplica al empezar cada paso, igual que en el móvil.
+- **Cómo funciona**: el móvil hace de servidor. Un servidor HTTP interno sirve solo los audios y carátulas que se envían, con rutas de token aleatorio. El altavoz los descarga desde ahí.
+  - Mientras tanto, una notificación "Enviando a <dispositivo>" (con botón Detener) mantiene la app, el WiFi y el servidor activos con la pantalla apagada.
+  - Por eso el móvil tiene que seguir encendido y en el WiFi.
+- **Colas y loop**: DLNA recibe un fichero cada vez. La app consulta al altavoz cada segundo y, al terminar un audio, envía el siguiente (o el mismo, si está en bucle). Entre repeticiones hay **un pequeño silencio** (~0,5–1 s) que no existe en el móvil.
+- Si el altavoz deja de responder, la app lo **vuelve a buscar** y reintenta: los altavoces LinkPlay como el GGMM cambian a veces de puerto. Si no aparece (está apagado o se ha perdido el WiFi), la reproducción se para, vuelve a "Este móvil" y la app lo avisa.
+- La búsqueda reintenta el envío cuando el WiFi va cargado, por ejemplo mientras un altavoz descarga un audio grande. El dispositivo al que estás conectado aparece siempre en la lista.
+- **Uso pensado**: de día. De noche, en modo avión, suena en el móvil o en un altavoz **Bluetooth** emparejado. El Bluetooth no necesita nada especial: Android le envía el audio y el preset controla su volumen.
+- **AirPlay y Chromecast** no están soportados.
+
 ## Arquitectura
 
 | Archivo | Qué hace |
 |---|---|
 | `lib/main.dart` | Pantalla principal (rejilla, importación, diálogo de preset) y descarga de carátulas |
-| `lib/playback.dart` | `PlaybackController`: único reproductor (`just_audio`), sonidos sueltos y colas, pausa y stop |
+| `lib/playback.dart` | `PlaybackController`: único reproductor, en el móvil (`just_audio`) o en un dispositivo DLNA. Sonidos sueltos y colas, pausa y stop |
 | `lib/queues.dart` | Lista de colas y editor de pasos |
 | `lib/widgets.dart` | Tarjetas, carátulas con carga animada, esqueletos y barra de reproducción |
 | `lib/files.dart` | Guarda audios y carátulas en el almacenamiento de la app |
@@ -39,11 +56,18 @@ SoundLife es una app Flutter (pensada sobre todo para Android) que reproduce los
 | `lib/storage.dart` | Guarda sonidos (`sound_items_v1`) y colas (`sound_queues_v1`) en `SharedPreferences` como JSON |
 | `lib/scraper.dart` | Detecta el código BA y saca de soundandlife.com el nombre y la carátula del producto (de los resultados de búsqueda o de la ficha) |
 | `lib/volume.dart` | `DeviceVolume`: canal `soundlife/volume` hacia el código nativo |
-| `android/.../MainActivity.kt` | Hereda de `AudioServiceActivity` y recibe el canal de volumen (`AudioManager.setStreamVolume(STREAM_MUSIC, …)`) |
+| `lib/cast.dart` | Búsqueda SSDP de reproductores, servidor HTTP local (`MediaServer`) y control remoto (`CastRenderer`): `DlnaRenderer` (SOAP) y `LinkPlayRenderer` (API HTTP de LinkPlay) |
+| `android/.../CastService.kt` | Servicio en primer plano (`connectedDevice`) mientras se envía audio, con los bloqueos de WiFi y de CPU |
+| `android/.../MainActivity.kt` | Hereda de `AudioServiceActivity`. Canal de volumen (`AudioManager.setStreamVolume(STREAM_MUSIC, …)`) y canal `soundlife/cast` (bloqueo multicast, servicio y permiso de notificaciones) |
 
 ## Permisos de Android
 
-`INTERNET` (carátulas), `READ_EXTERNAL_STORAGE` y `READ_MEDIA_AUDIO` (audios locales), y `WAKE_LOCK`, `FOREGROUND_SERVICE` y `FOREGROUND_SERVICE_MEDIA_PLAYBACK` (reproducción con la pantalla apagada).
+- `INTERNET`: carátulas, y el servidor y el control DLNA.
+- `READ_EXTERNAL_STORAGE` y `READ_MEDIA_AUDIO`: audios locales.
+- `WAKE_LOCK`, `FOREGROUND_SERVICE` y `FOREGROUND_SERVICE_MEDIA_PLAYBACK`: reproducción con la pantalla apagada.
+- `ACCESS_WIFI_STATE`, `ACCESS_NETWORK_STATE`, `CHANGE_WIFI_MULTICAST_STATE` y `FOREGROUND_SERVICE_CONNECTED_DEVICE`: enviar a dispositivos DLNA.
+- `POST_NOTIFICATIONS`: la notificación "Enviando a…". Se pide al conectar por primera vez.
+- `usesCleartextTraffic`: el móvil y el altavoz hablan por HTTP dentro de la red local.
 
 ## Limitaciones conocidas
 
@@ -51,3 +75,4 @@ SoundLife es una app Flutter (pensada sobre todo para Android) que reproduce los
 - La carátula depende del HTML de soundandlife.com. Si la web cambia de estructura, habrá que ajustar `scraper.dart`.
 - Las colas guardan cada sonido por su nombre de fichero. Si un sonido desaparece, ese paso se salta.
 - Todavía no se pueden borrar sonidos desde la app, y no hay temporizador de apagado.
+- Al enviar a DLNA hay un pequeño silencio entre repeticiones y pasos. Cambiar de dispositivo reinicia el audio actual desde el principio.

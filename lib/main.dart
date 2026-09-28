@@ -9,7 +9,6 @@ import 'playback.dart';
 import 'queues.dart';
 import 'storage.dart';
 import 'scraper.dart';
-import 'volume.dart';
 import 'widgets.dart';
 
 Future<void> main() async {
@@ -74,6 +73,9 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _playback.addListener(_onPlaybackChanged);
+    _playback.onCastError = (message) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    };
     _loadData();
     PackageInfo.fromPlatform().then((info) {
       if (mounted) setState(() => _version = '${info.version} (${info.buildNumber})');
@@ -273,8 +275,8 @@ class _HomeScreenState extends State<HomeScreen> {
                             setDialogState(() {
                               currentVolume = val;
                             });
-                            // Si este sonido está sonando, se oye el cambio en vivo
-                            if (isPlaying()) DeviceVolume.set(val);
+                            // Si este sonido está sonando, se oye el cambio en vivo (móvil o dispositivo remoto)
+                            if (isPlaying()) _playback.previewVolume(val);
                           },
                         ),
                       ),
@@ -296,7 +298,7 @@ class _HomeScreenState extends State<HomeScreen> {
               actions: [
                 TextButton(
                   onPressed: () {
-                    if (isPlaying()) DeviceVolume.set(sound.volumePreset);
+                    if (isPlaying()) _playback.previewVolume(sound.volumePreset);
                     Navigator.pop(context);
                   },
                   child: const Text('Cancelar'),
@@ -429,14 +431,17 @@ class _HomeScreenState extends State<HomeScreen> {
         bottom: _progressBar(),
         actions: [
           IconButton(
+            icon: Icon(
+              _playback.target == null ? Icons.cast : Icons.cast_connected,
+              color: _playback.target == null ? null : kAccent,
+            ),
+            onPressed: () => CastSheet.show(context, _playback),
+            tooltip: _playback.target == null ? 'Reproducir en otro dispositivo' : 'En ${_playback.target!.name}',
+          ),
+          IconButton(
             icon: const Icon(Icons.queue_music),
             onPressed: _sounds.isEmpty ? null : _openQueues,
             tooltip: 'Colas',
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: busy ? null : () => _fetchCovers(_sounds, force: true),
-            tooltip: 'Actualizar carátulas y nombres',
           ),
           IconButton(
             icon: const Icon(Icons.folder_open),
@@ -446,6 +451,16 @@ class _HomeScreenState extends State<HomeScreen> {
           PopupMenuButton<void>(
             tooltip: 'Más opciones',
             itemBuilder: (context) => [
+              PopupMenuItem(
+                enabled: !busy && _sounds.isNotEmpty,
+                onTap: () => _fetchCovers(_sounds, force: true),
+                child: const ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.refresh),
+                  title: Text('Actualizar carátulas y nombres'),
+                ),
+              ),
+              const PopupMenuDivider(),
               PopupMenuItem(
                 enabled: false,
                 child: ListTile(

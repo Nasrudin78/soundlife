@@ -1,7 +1,14 @@
 package com.example.soundlife
 
+import android.Manifest
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.AudioManager
+import android.net.wifi.WifiManager
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import com.ryanheise.audioservice.AudioServiceActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -32,5 +39,56 @@ class MainActivity : AudioServiceActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        configureCastChannel(flutterEngine)
+    }
+
+    private var multicastLock: WifiManager.MulticastLock? = null
+
+    private fun configureCastChannel(flutterEngine: FlutterEngine) {
+        val channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "soundlife/cast")
+        val mainHandler = Handler(Looper.getMainLooper())
+        CastService.onStopRequested = {
+            mainHandler.post { channel.invokeMethod("stopRequested", null) }
+        }
+
+        channel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                // Sin este lock Android descarta los paquetes multicast (búsqueda SSDP)
+                "multicastLock" -> {
+                    if (call.argument<Boolean>("acquire") == true) {
+                        if (multicastLock == null) {
+                            val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                            multicastLock = wifi.createMulticastLock("soundlife:ssdp").apply {
+                                setReferenceCounted(false)
+                            }
+                        }
+                        multicastLock?.acquire()
+                    } else {
+                        multicastLock?.takeIf { it.isHeld }?.release()
+                    }
+                    result.success(null)
+                }
+                "startService" -> {
+                    val intent = Intent(this, CastService::class.java)
+                        .putExtra(CastService.EXTRA_NAME, call.argument<String>("name"))
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
+                    result.success(null)
+                }
+                "stopService" -> {
+                    stopService(Intent(this, CastService::class.java))
+                    result.success(null)
+                }
+                "requestNotificationPermission" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                        checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                    ) {
+                        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+                    }
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
     }
 }

@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'cast.dart';
 import 'models.dart';
 import 'playback.dart';
 
@@ -227,6 +229,7 @@ class NowPlayingBar extends StatelessWidget {
   final bool isPaused;
   final String? queueName;
   final String? progressLabel;
+  final String? targetName;
   final VoidCallback onPlayPause;
   final VoidCallback onStop;
   final VoidCallback? onNext;
@@ -237,6 +240,7 @@ class NowPlayingBar extends StatelessWidget {
     required this.isPaused,
     this.queueName,
     this.progressLabel,
+    this.targetName,
     required this.onPlayPause,
     required this.onStop,
     this.onNext,
@@ -274,10 +278,11 @@ class NowPlayingBar extends StatelessWidget {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      queueName != null
-                          ? '${isPaused ? 'En pausa' : queueName} · $progressLabel'
-                          : '${isPaused ? 'En pausa' : 'Reproduciendo'} · '
-                              'Vol ${(sound.volumePreset * 100).round()}%${sound.loopMode ? ' · Loop' : ''}',
+                      (queueName != null
+                              ? '${isPaused ? 'En pausa' : queueName} · $progressLabel'
+                              : '${isPaused ? 'En pausa' : 'Reproduciendo'} · '
+                                  'Vol ${(sound.volumePreset * 100).round()}%${sound.loopMode ? ' · Loop' : ''}') +
+                          (targetName != null ? ' · en $targetName' : ''),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 12, color: Colors.white60),
@@ -333,12 +338,163 @@ class PlayerBar extends StatelessWidget {
                   isPaused: playback.isPaused,
                   queueName: playback.queue?.name,
                   progressLabel: playback.progressLabel,
+                  targetName: playback.target?.name,
                   onPlayPause: playback.isPaused ? playback.resume : playback.pause,
                   onStop: playback.stop,
                   onNext: playback.hasNext ? playback.nextStep : null,
                 ),
         );
       },
+    );
+  }
+}
+
+/// Hoja para elegir dónde suena: este móvil o un dispositivo DLNA de la red.
+class CastSheet extends StatefulWidget {
+  final PlaybackController playback;
+  const CastSheet({super.key, required this.playback});
+
+  static Future<void> show(BuildContext context, PlaybackController playback) => showModalBottomSheet(
+        context: context,
+        backgroundColor: const Color(0xFF1E1E1E),
+        showDragHandle: true,
+        builder: (_) => CastSheet(playback: playback),
+      );
+
+  @override
+  State<CastSheet> createState() => _CastSheetState();
+}
+
+class _CastSheetState extends State<CastSheet> {
+  final List<CastDevice> _devices = [];
+  StreamSubscription<CastDevice>? _sub;
+  bool _scanning = false;
+  bool _noWifi = false;
+  String? _connecting;
+
+  @override
+  void initState() {
+    super.initState();
+    _scan();
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _scan() async {
+    await _sub?.cancel();
+    final ip = await MediaServer.wifiAddress();
+    if (!mounted) return;
+    if (ip == null) {
+      setState(() => _noWifi = true);
+      return;
+    }
+    setState(() {
+      _noWifi = false;
+      _scanning = true;
+      _devices.clear();
+    });
+    _sub = CastDiscovery.discover().listen(
+      (d) => setState(() => _devices.add(d)),
+      onError: (_) {},
+      onDone: () {
+        if (mounted) setState(() => _scanning = false);
+      },
+    );
+  }
+
+  Future<void> _select(CastDevice? device) async {
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _connecting = device?.id ?? 'phone');
+    try {
+      device == null ? await widget.playback.disconnect() : await widget.playback.connect(device);
+      navigator.pop();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _connecting = null);
+      messenger.showSnackBar(SnackBar(content: Text('No se pudo conectar: $e')));
+    }
+  }
+
+  Widget _tile({required IconData icon, required String title, String? subtitle, required bool selected, required String id, required VoidCallback onTap}) {
+    return ListTile(
+      leading: Icon(icon, color: selected ? kAccent : null),
+      title: Text(title, style: TextStyle(color: selected ? kAccent : null, fontWeight: selected ? FontWeight.bold : null)),
+      subtitle: subtitle == null ? null : Text(subtitle, style: const TextStyle(fontSize: 12, color: Colors.white54)),
+      trailing: _connecting == id
+          ? const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))
+          : selected
+              ? const Icon(Icons.check, color: kAccent)
+              : null,
+      onTap: _connecting != null ? null : onTap,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final target = widget.playback.target;
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 8, 8),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text('Reproducir en', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                ),
+                if (_scanning)
+                  const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                  )
+                else
+                  IconButton(tooltip: 'Buscar de nuevo', icon: const Icon(Icons.refresh), onPressed: _scan),
+              ],
+            ),
+          ),
+          _tile(
+            icon: Icons.phone_android,
+            title: 'Este móvil',
+            subtitle: 'También altavoces Bluetooth emparejados',
+            selected: target == null,
+            id: 'phone',
+            onTap: () => _select(null),
+          ),
+          for (final d in [
+            // El dispositivo actual siempre aparece, aunque no responda a esta búsqueda
+            if (target != null && !_devices.any((d) => d.id == target.id)) target,
+            ..._devices,
+          ])
+            _tile(
+              icon: Icons.speaker,
+              title: d.name,
+              subtitle: d.model,
+              selected: target?.id == d.id,
+              id: d.id,
+              onTap: () => _select(d),
+            ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+            child: Text(
+              _noWifi
+                  ? 'Conéctate al WiFi de casa para enviar a otros dispositivos.'
+                  : _scanning
+                      ? 'Buscando dispositivos en la red…'
+                      : _devices.isEmpty
+                          ? 'No se ha encontrado ningún dispositivo DLNA. Comprueba que están encendidos y en el mismo WiFi.'
+                          : 'El móvil tiene que seguir en el WiFi mientras suena en otro dispositivo.',
+              style: const TextStyle(fontSize: 12, color: Colors.white54),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

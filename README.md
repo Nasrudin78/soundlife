@@ -6,6 +6,7 @@ App Flutter para Android que reproduce en el móvil los audios de [Sound and Lif
 - **Volumen por sonido:** cada sonido tiene su preset de volumen, que fija el **volumen multimedia del dispositivo** (0 % es silencio y 100 % es el máximo). Por defecto es el 10 %.
 - **Loop mode** por sonido, y **pausa y stop** para todo desde la barra de abajo.
 - **Colas:** encadenan sonidos con repeticiones por paso y un bucle infinito opcional al final, por ejemplo `BA07 ×1 → BA09 ×2 → BA07 ×N → BA50 ∞`.
+- **Enviar a otros dispositivos:** a Sonos, Smart TV y altavoces WiFi DLNA/UPnP (por ejemplo, GGMM E2) desde el botón cast, con el móvil en el WiFi de casa.
 - **Pantalla apagada:** la reproducción corre como servicio en primer plano (`just_audio` + `just_audio_background`), con controles en la notificación y en la pantalla de bloqueo.
 
 El funcionamiento y la arquitectura están explicados en [DESCRIPCION_APP.md](DESCRIPCION_APP.md).
