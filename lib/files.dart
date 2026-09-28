@@ -39,6 +39,42 @@ class AppFiles {
     }
   }
 
+  /// Duración exacta de un WAV leyendo su cabecera (byte rate y tamaño del bloque de datos).
+  /// Devuelve null si no es un WAV válido.
+  static Duration? wavDuration(String path) {
+    RandomAccessFile? raf;
+    try {
+      raf = File(path).openSync();
+      final head = raf.readSync(12);
+      if (head.length < 12 || String.fromCharCodes(head.sublist(0, 4)) != 'RIFF' ||
+          String.fromCharCodes(head.sublist(8, 12)) != 'WAVE') {
+        return null;
+      }
+      int? byteRate;
+      var offset = 12;
+      final length = raf.lengthSync();
+      while (offset + 8 <= length) {
+        raf.setPositionSync(offset);
+        final chunk = raf.readSync(8);
+        final id = String.fromCharCodes(chunk.sublist(0, 4));
+        final size = chunk[4] | chunk[5] << 8 | chunk[6] << 16 | chunk[7] << 24;
+        if (id == 'fmt ') {
+          final fmt = raf.readSync(12);
+          byteRate = fmt[8] | fmt[9] << 8 | fmt[10] << 16 | fmt[11] << 24;
+        } else if (id == 'data' && byteRate != null && byteRate > 0) {
+          // Algunos WAV largos llevan un tamaño de datos incorrecto: se limita al fichero real
+          final dataSize = size == 0 || offset + 8 + size > length ? length - offset - 8 : size;
+          return Duration(microseconds: dataSize * 1000000 ~/ byteRate);
+        }
+        offset += 8 + size + (size & 1);
+      }
+    } catch (_) {
+    } finally {
+      raf?.closeSync();
+    }
+    return null;
+  }
+
   /// Descarga la carátula y devuelve la ruta local (o null si falla).
   static Future<String?> cacheCover(String identifier, String url) async {
     try {

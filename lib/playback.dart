@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'cast.dart';
+import 'files.dart';
 import 'models.dart';
 import 'volume.dart';
 
@@ -42,6 +43,9 @@ class PlaybackController extends ChangeNotifier {
   Timer? _poll;
   bool _polling = false;
   bool _remoteStarted = false; // el dispositivo ya reprodujo la entrada actual
+  // Dispositivos con quietPolling: momento previsto de la próxima consulta (fin del audio)
+  DateTime? _checkAt;
+  Duration? _checkRemaining; // tiempo hasta la consulta, guardado al pausar
   int _pollFailures = 0;
 
   /// Se llama cuando falla el dispositivo remoto y se vuelve al móvil.
@@ -179,6 +183,10 @@ class PlaybackController extends ChangeNotifier {
   Future<void> pause() async {
     if (_renderer != null) {
       await _remote(() => _renderer!.pause());
+      if (_checkAt != null) {
+        _checkRemaining = _checkAt!.difference(DateTime.now());
+        _checkAt = null;
+      }
       _paused = true;
       notifyListeners();
     } else {
@@ -193,6 +201,11 @@ class PlaybackController extends ChangeNotifier {
         if (sound != null) await _renderer!.setVolume(sound.volumePreset);
         await _renderer!.play();
       });
+      if (_renderer?.quietPolling == true) {
+        _remoteStarted = true;
+        _checkAt = DateTime.now().add(_checkRemaining ?? const Duration(seconds: 3));
+        _checkRemaining = null;
+      }
       _paused = false;
       notifyListeners();
     } else {
@@ -287,6 +300,7 @@ class PlaybackController extends ChangeNotifier {
     _index = index;
     _paused = !autoplay;
     _remoteStarted = false;
+    _checkAt = null;
     notifyListeners();
     await _remote(() async {
       await _renderer!.load(entry.sound);
@@ -295,6 +309,49 @@ class PlaybackController extends ChangeNotifier {
       }
       if (autoplay) await _renderer!.play();
     });
+    if (_renderer?.quietPolling == true) {
+      // WAV: fin exacto por su cabecera. Otros formatos: una consulta a los 3 s para saber la duración.
+      final duration = AppFiles.wavDuration(entry.sound.filePath);
+      final wait = duration != null ? duration + const Duration(milliseconds: 1500) : const Duration(seconds: 3);
+      if (autoplay) {
+        _remoteStarted = true;
+        _checkAt = DateTime.now().add(wait);
+      } else {
+        _checkRemaining = wait;
+      }
+    }
+  }
+
+  /// Sondeo de dispositivos con quietPolling: nada mientras suena, solo al final previsto.
+  Future<void> _pollQuiet(CastRenderer renderer) async {
+    final checkAt = _checkAt;
+    if (checkAt == null || DateTime.now().isBefore(checkAt)) return;
+    final state = await renderer.transportState();
+    _pollFailures = 0;
+    if (renderer != _renderer) return;
+    final now = DateTime.now();
+    switch (state) {
+      case 'PLAYING':
+        if (_paused) {
+          _paused = false; // reanudado desde el propio altavoz
+          notifyListeners();
+        }
+        // Aún no ha terminado (o no conocíamos la duración): siguiente consulta al final
+        final p = await renderer.progress();
+        final left = p == null ? const Duration(seconds: 5) : p.total - p.position + const Duration(seconds: 1);
+        _checkAt = now.add(left < const Duration(seconds: 2) ? const Duration(seconds: 2) : left);
+      case 'PAUSED_PLAYBACK':
+        if (!_paused) {
+          _paused = true; // pausado desde el propio altavoz: sin audio, se puede consultar a menudo
+          notifyListeners();
+        }
+        _checkAt = now.add(const Duration(seconds: 10));
+      case 'STOPPED':
+      case 'NO_MEDIA_PRESENT':
+        if (_remoteStarted) await _advanceRemote();
+      default:
+        _checkAt = now.add(const Duration(seconds: 2)); // cargando
+    }
   }
 
   Future<void> _pollRemote() async {
@@ -302,6 +359,10 @@ class PlaybackController extends ChangeNotifier {
     if (renderer == null || _polling || _entries.isEmpty || _index == null) return;
     _polling = true;
     try {
+      if (renderer.quietPolling) {
+        await _pollQuiet(renderer);
+        return;
+      }
       final state = await renderer.transportState();
       _pollFailures = 0;
       if (renderer != _renderer) return;

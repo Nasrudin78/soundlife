@@ -340,6 +340,13 @@ abstract class CastRenderer {
   /// [volume] 0.0–1.0 → volumen del altavoz 0–100 (como su botón físico).
   Future<void> setVolume(double volume);
   Future<String> transportState();
+
+  /// Si es true, consultar el estado durante la reproducción provoca cortes de sonido
+  /// (probado de oído en el GGMM E2 con WAV): solo se consulta al final previsto del audio.
+  bool get quietPolling;
+
+  /// Posición y duración del audio actual, si el dispositivo las da.
+  Future<({Duration position, Duration total})?> progress();
 }
 
 /// Control SOAP de un reproductor DLNA.
@@ -413,6 +420,12 @@ class DlnaRenderer implements CastRenderer {
   }
 
   @override
+  bool get quietPolling => false;
+
+  @override
+  Future<({Duration position, Duration total})?> progress() async => null;
+
+  @override
   Future<void> play() => _soap(device.avTransport, _avt, 'Play', {'InstanceID': '0', 'Speed': '1'});
   @override
   Future<void> pause() => _soap(device.avTransport, _avt, 'Pause', {'InstanceID': '0'});
@@ -446,6 +459,18 @@ class LinkPlayRenderer implements CastRenderer {
   LinkPlayRenderer(this.device);
 
   Uri? _pending; // audio cargado y aún no enviado
+
+  @override
+  bool get quietPolling => true;
+
+  @override
+  Future<({Duration position, Duration total})?> progress() async {
+    final status = await _cmd('getPlayerStatus');
+    final pos = int.tryParse(_field(status, 'curpos') ?? '');
+    final total = int.tryParse(_field(status, 'totlen') ?? '');
+    if (pos == null || total == null || total <= 0) return null;
+    return (position: Duration(milliseconds: pos), total: Duration(milliseconds: total));
+  }
 
   Future<String> _cmd(String command) async {
     final url = Uri.parse('http://${device.avTransport.host}/httpapi.asp?command=$command');

@@ -20,7 +20,12 @@ class SoundItem {
   });
 
   /// Nombre de la web si se encontró; si no, el nombre del fichero sin extensión.
-  String get displayName => title ?? fileName.replaceAll(RegExp(r'\.[^.]+$'), '');
+  String get displayName => title != null ? _lowercaseTitle(title!) : fileName.replaceAll(RegExp(r'\.[^.]+$'), '');
+
+  /// "BA07 Rescate – Ansiedad" → "BA07 rescate – ansiedad": todo en minúsculas salvo el código BAxx.
+  static String _lowercaseTitle(String title) => title
+      .toLowerCase()
+      .replaceAllMapped(RegExp(r'\bba(\d+)'), (m) => 'BA${m.group(1)}');
 
   Map<String, dynamic> toJson() {
     return {
