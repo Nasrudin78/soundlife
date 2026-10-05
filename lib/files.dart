@@ -1,7 +1,9 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
+import 'product_details.dart';
 
 /// Guarda audios y carátulas en el almacenamiento propio de la app para que
 /// todo funcione sin conexión (modo avión) y no dependa de la caché.
@@ -73,6 +75,52 @@ class AppFiles {
       raf?.closeSync();
     }
     return null;
+  }
+
+  /// Guarda la ficha en `details/<id>.json`, con sus imágenes descargadas al lado,
+  /// y devuelve la ruta del JSON (o null si falla).
+  static Future<String?> saveDetails(String identifier, ProductDetails details) async {
+    try {
+      final dir = await _dir('details');
+      var imageIndex = 0;
+      final sections = <DetailSection>[];
+      for (final section in details.sections) {
+        final blocks = <DetailBlock>[];
+        for (final block in section.blocks) {
+          if (block.type != BlockType.image) {
+            blocks.add(block);
+            continue;
+          }
+          final file = File('${dir.path}/${identifier}_${imageIndex++}.jpg');
+          try {
+            final response = await http.get(Uri.parse(block.text));
+            if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
+              await file.writeAsBytes(response.bodyBytes, flush: true);
+              blocks.add(block.withPath(file.path));
+              continue;
+            }
+          } catch (_) {}
+          blocks.add(block); // sin copia local: se intentará cargar de la web
+        }
+        sections.add(DetailSection(section.title, blocks));
+      }
+      final file = File('${dir.path}/$identifier.json');
+      await file.writeAsString(jsonEncode(ProductDetails(headline: details.headline, sections: sections).toJson()),
+          flush: true);
+      return file.path;
+    } catch (e) {
+      debugPrint('Error al guardar la ficha $identifier: $e');
+      return null;
+    }
+  }
+
+  static Future<ProductDetails?> loadDetails(String path) async {
+    try {
+      return ProductDetails.fromJson(jsonDecode(await File(path).readAsString()));
+    } catch (e) {
+      debugPrint('Error al leer la ficha $path: $e');
+      return null;
+    }
   }
 
   /// Descarga la carátula y devuelve la ruta local (o null si falla).

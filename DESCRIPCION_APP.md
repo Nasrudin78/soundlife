@@ -7,19 +7,22 @@ SoundLife es una app Flutter (pensada sobre todo para Android) que reproduce los
 1. **Añadir audios**: con el botón de carpeta (o "Seleccionar Archivos" si la lista está vacía) se eligen uno o varios ficheros `mp3`, `wav`, `m4a`, `flac` o `aac`.
    Los ficheros se mueven a una carpeta propia de la app (`sounds/`), porque Android puede vaciar la caché. Mientras se importan, arriba pone "Importando archivos…" y se ven tarjetas grises que parpadean mientras cargan.
 2. **Detectar el código**: la app busca en el nombre del fichero un código `BA` seguido de un número (`BA-07 rescate`, `BA 50`, `ba_9`…) y lo normaliza a `BA07`, `BA50` o `BA09`.
-3. **Nombre y carátula**: con ese código busca el producto en soundandlife.com. Guarda su **nombre**, que se muestra en minúsculas salvo el código (por ejemplo "BA07 rescate – ansiedad") en toda la app y en la notificación, y **descarga la imagen al móvil** (`covers/`), así que en modo avión también se ve. Si no lo encuentra en la web, muestra el nombre del fichero. Busca 4 sonidos a la vez y cada tarjeta se actualiza en cuanto llega su información. Arriba se ve "Cargando carátulas y nombres x/y". El botón ⟳ vuelve a descargarlo todo.
+3. **Nombre y carátula**: con ese código busca el producto en soundandlife.com. Guarda su **nombre**, que se muestra en minúsculas salvo el código (por ejemplo "BA07 rescate – ansiedad") en toda la app y en la notificación, y **descarga la imagen al móvil** (`covers/`), así que en modo avión también se ve. Si no lo encuentra en la web, muestra el nombre del fichero. Busca 4 sonidos a la vez y cada tarjeta se actualiza en cuanto llega su información. Arriba se ve "Cargando carátulas y nombres x/y". En el menú ⋮, "Actualizar fichas" vuelve a descargarlo todo.
 4. **Tocar una tarjeta**: reproduce el audio. Si se toca otra vez, se para, o se reanuda si estaba en pausa. Solo suena un audio a la vez. La barra de abajo tiene **Pausa/Reanudar** y **Stop**, que funcionan para todo.
 5. **Mantener pulsada una tarjeta**: abre el *preset* de ese sonido.
    - **Volumen** (0–100 %, en pasos del 5 %): fija el **volumen multimedia del dispositivo**, igual que los botones físicos. 0 % es silencio y 100 % es el máximo del móvil. Los sonidos nuevos empiezan al **10 %**. Si el audio está sonando, el cambio se oye al mover el deslizador.
    - **Loop mode**: al terminar, el audio vuelve a empezar.
-6. **Colas** (botón ☰♪): encadenan sonidos, por ejemplo *BA07 ×1 → BA09 ×2 → BA07 ×N → BA50 ∞*.
+6. **Ficha del sonido** (botón ⓘ de la tarjeta): carátula grande, un **titular de una línea con para qué sirve** y los apartados **Descripción**, **Aplicaciones** y **Posología** completos, como en la web, con sus subtítulos, listas e imágenes (por ejemplo, el mapa 3D de frecuencias). Tiene botones para reproducir y abrir el preset.
+   - Los datos salen de la ficha del producto en soundandlife.com. El titular es la primera frase del resumen corto que la web pone arriba.
+   - La ficha se guarda en el móvil (`details/BAxx.json` y sus imágenes), así que en modo avión también se ve. Al abrir esta versión por primera vez, se descargan las fichas de toda la biblioteca. Si alguna falla, la propia ficha ofrece "Descargar ahora".
+7. **Colas** (botón ☰♪): encadenan sonidos, por ejemplo *BA07 ×1 → BA09 ×2 → BA07 ×N → BA50 ∞*.
    - Cada paso tiene su número de repeticiones. Solo el **último** puede quedarse en bucle infinito (∞).
    - Los pasos se reordenan arrastrándolos. Deslizando una cola hacia la izquierda se borra, y se puede deshacer.
    - Al empezar cada paso se aplica el volumen del preset de su sonido. Dentro de un mismo paso (sus repeticiones) no se vuelve a aplicar, por si has cambiado el volumen a mano. El *Loop mode* del preset no se usa en las colas: lo que manda son las repeticiones de cada paso.
    - Mientras suena, la barra de abajo muestra, por ejemplo, "Paso 2/4 · 1/2" y tiene un botón para saltar al paso siguiente.
 
-7. **Enviar a otro dispositivo** (botón cast): ver la sección de abajo.
-8. **Menú ⋮**: "Actualizar carátulas y nombres" y la versión instalada, que se lee de `pubspec.yaml`. La barra de arriba muestra solo "SoundLife".
+8. **Enviar a otro dispositivo** (botón cast): ver la sección de abajo.
+9. **Menú ⋮**: "Actualizar fichas" (nombre, carátula y descripción) y la versión instalada, que se lee de `pubspec.yaml`. La barra de arriba muestra solo "SoundLife".
 
 ## Pantalla apagada y modo avión
 
@@ -52,8 +55,10 @@ Con el móvil conectado al **WiFi de casa** (no hace falta internet), el botón 
 | `lib/main.dart` | Pantalla principal (rejilla, importación, diálogo de preset) y descarga de carátulas |
 | `lib/playback.dart` | `PlaybackController`: único reproductor, en el móvil (`just_audio`) o en un dispositivo DLNA. Sonidos sueltos y colas, pausa y stop |
 | `lib/queues.dart` | Lista de colas y editor de pasos |
+| `lib/details.dart` | Pantalla de la ficha del sonido |
+| `lib/product_details.dart` | Modelo de la ficha y extracción de sus apartados del HTML de la web |
 | `lib/widgets.dart` | Tarjetas, carátulas con carga animada, esqueletos y barra de reproducción |
-| `lib/files.dart` | Guarda audios y carátulas en el almacenamiento de la app |
+| `lib/files.dart` | Guarda audios, carátulas y fichas en el almacenamiento de la app |
 | `lib/models.dart` | `SoundItem` (ruta, código BA, nombre de la web, carátula, volumen, loop), `SoundQueue` y `QueueStep` |
 | `lib/storage.dart` | Guarda sonidos (`sound_items_v1`) y colas (`sound_queues_v1`) en `SharedPreferences` como JSON |
 | `lib/scraper.dart` | Detecta el código BA y saca de soundandlife.com el nombre y la carátula del producto (de los resultados de búsqueda o de la ficha) |

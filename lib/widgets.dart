@@ -99,6 +99,7 @@ class SoundCard extends StatelessWidget {
   final bool missing;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
+  final VoidCallback? onInfo;
 
   const SoundCard({
     super.key,
@@ -109,6 +110,7 @@ class SoundCard extends StatelessWidget {
     this.missing = false,
     required this.onTap,
     required this.onLongPress,
+    this.onInfo,
   });
 
   @override
@@ -180,6 +182,17 @@ class SoundCard extends StatelessWidget {
                         const SizedBox(width: 6),
                         const Icon(Icons.repeat, size: 14, color: kAccent),
                       ],
+                      const Spacer(),
+                      if (onInfo != null)
+                        IconButton(
+                          tooltip: 'Ficha del sonido',
+                          icon: const Icon(Icons.info_outline, size: 20),
+                          color: Colors.white70,
+                          padding: EdgeInsets.zero,
+                          visualDensity: VisualDensity.compact,
+                          constraints: const BoxConstraints.tightFor(width: 28, height: 20),
+                          onPressed: onInfo,
+                        ),
                     ],
                   ),
                 ],

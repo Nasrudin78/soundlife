@@ -5,6 +5,8 @@ class SoundItem {
   String? title; // nombre del producto en soundandlife.com
   String? coverUrl;
   String? coverPath; // copia local de la carátula (para modo avión)
+  String? productUrl; // ficha en soundandlife.com
+  String? detailsPath; // copia local de la ficha (descripción, aplicaciones, posología)
   double volumePreset;
   bool loopMode;
 
@@ -15,6 +17,8 @@ class SoundItem {
     this.title,
     this.coverUrl,
     this.coverPath,
+    this.productUrl,
+    this.detailsPath,
     this.volumePreset = 0.1,
     this.loopMode = false,
   });
@@ -35,6 +39,8 @@ class SoundItem {
       'title': title,
       'coverUrl': coverUrl,
       'coverPath': coverPath,
+      'productUrl': productUrl,
+      'detailsPath': detailsPath,
       'volumePreset': volumePreset,
       'loopMode': loopMode,
     };
@@ -48,6 +54,8 @@ class SoundItem {
       title: json['title'],
       coverUrl: json['coverUrl'],
       coverPath: json['coverPath'],
+      productUrl: json['productUrl'],
+      detailsPath: json['detailsPath'],
       volumePreset: json['volumePreset']?.toDouble() ?? 0.1,
       loopMode: json['loopMode'] ?? false,
     );

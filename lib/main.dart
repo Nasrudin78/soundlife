@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'details.dart';
 import 'files.dart';
 import 'models.dart';
 import 'playback.dart';
@@ -114,7 +115,8 @@ class _HomeScreenState extends State<HomeScreen> {
         ..clear()
         ..addAll(sounds.where((s) => !File(s.filePath).existsSync()).map((s) => s.filePath));
     });
-    _fetchCovers(sounds.where((s) => s.coverPath == null || s.title == null).toList());
+    // Primera vez con esta versión: también se descargan las fichas de toda la biblioteca
+    _fetchCovers(sounds.where((s) => s.coverPath == null || s.title == null || s.detailsPath == null).toList());
   }
 
   String _identifierOf(SoundItem sound) => ScraperService.extractIdentifier(
@@ -139,13 +141,23 @@ class _HomeScreenState extends State<HomeScreen> {
       while (pending.isNotEmpty) {
         final sound = pending.removeAt(0);
         final id = _identifierOf(sound);
-        final needsInfo = force || sound.coverUrl == null || sound.title == null;
+        final needsInfo = force || sound.coverUrl == null || sound.title == null || sound.detailsPath == null;
         final info = needsInfo ? await ScraperService.fetchProduct(id) : null;
         final url = info?.imageUrl ?? sound.coverUrl;
         final needsDownload = url != null && (force || sound.coverPath == null || url != sound.coverUrl);
         final path = needsDownload ? await AppFiles.cacheCover(id, url) : null;
+        final details = info?.details;
+        final detailsPath = details == null || details.isEmpty ? null : await AppFiles.saveDetails(id, details);
         if (!mounted) return;
         setState(() {
+          if (detailsPath != null) {
+            sound.detailsPath = detailsPath;
+            changed = true;
+          }
+          if (info?.productUrl != null && info!.productUrl != sound.productUrl) {
+            sound.productUrl = info.productUrl;
+            changed = true;
+          }
           if (info?.title != null && info!.title != sound.title) {
             sound.title = info.title;
             changed = true;
@@ -236,6 +248,18 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     await _playback.playSound(sound);
+  }
+
+  void _openDetails(SoundItem sound, int index) {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => SoundDetailScreen(
+        sound: sound,
+        playback: _playback,
+        onPlay: () => _playSound(sound),
+        onPreset: () => _showVolumeConfig(sound, index),
+        onDownload: () => _fetchCovers([sound], force: true),
+      ),
+    ));
   }
 
   void _openQueues() {
@@ -393,6 +417,7 @@ class _HomeScreenState extends State<HomeScreen> {
           missing: _missing.contains(sound.filePath),
           onTap: () => _playSound(sound),
           onLongPress: () => _showVolumeConfig(sound, index),
+          onInfo: () => _openDetails(sound, index),
         );
       },
     );
@@ -420,7 +445,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ? const Text('Importando archivos…', key: ValueKey('imp'), style: TextStyle(fontSize: 12, color: Colors.white60))
                   : _coversTotal > 0
                       ? Text(
-                          'Cargando carátulas y nombres $_coversDone/$_coversTotal',
+                          'Descargando fichas $_coversDone/$_coversTotal',
                           key: const ValueKey('cov'),
                           style: const TextStyle(fontSize: 12, color: Colors.white60),
                         )
@@ -457,7 +482,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: const ListTile(
                   contentPadding: EdgeInsets.zero,
                   leading: Icon(Icons.refresh),
-                  title: Text('Actualizar carátulas y nombres'),
+                  title: Text('Actualizar fichas'),
+                  subtitle: Text('Nombre, carátula y descripción'),
                 ),
               ),
               const PopupMenuDivider(),

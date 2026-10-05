@@ -2,12 +2,17 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:html/dom.dart';
 import 'package:html/parser.dart' show parse;
+import 'product_details.dart';
+
+export 'product_details.dart';
 
 /// Datos de un producto de soundandlife.com.
 class ProductInfo {
   final String? title; // ej. "BA07 Rescate – Ansiedad"
   final String? imageUrl;
-  const ProductInfo({this.title, this.imageUrl});
+  final String? productUrl;
+  final ProductDetails? details; // descripción, aplicaciones y posología
+  const ProductInfo({this.title, this.imageUrl, this.productUrl, this.details});
 }
 
 class ScraperService {
@@ -21,7 +26,9 @@ class ScraperService {
     return 'BA${int.parse(match.group(1)!).toString().padLeft(2, '0')}';
   }
 
-  /// Busca el producto por identificador (ej. BA01) y devuelve su nombre y carátula.
+  static const Map<String, String> _headers = {'User-Agent': 'Mozilla/5.0 (Linux; Android) SoundLife'};
+
+  /// Busca el producto por identificador (ej. BA01) y devuelve su nombre, carátula y ficha.
   static Future<ProductInfo?> fetchProduct(String identifier) async {
     final id = extractIdentifier(identifier);
     if (id.isEmpty) return null;
@@ -29,7 +36,7 @@ class ScraperService {
 
     try {
       final url = Uri.parse('https://soundandlife.com/?s=$id&post_type=product');
-      final response = await http.get(url, headers: {'User-Agent': 'Mozilla/5.0 (Linux; Android) SoundLife'});
+      final response = await http.get(url, headers: _headers);
       if (response.statusCode != 200) return null;
 
       final document = parse(response.body);
@@ -40,7 +47,12 @@ class ScraperService {
         if (!_titleMatches(productTitle.text, number)) return null;
         final img = document.querySelector('img.wp-post-image') ??
             document.querySelector('.woocommerce-product-gallery img');
-        return ProductInfo(title: _clean(productTitle.text), imageUrl: _imageSrc(img, preferLarge: true));
+        return ProductInfo(
+          title: _clean(productTitle.text),
+          imageUrl: _imageSrc(img, preferLarge: true),
+          productUrl: document.querySelector('link[rel="canonical"]')?.attributes['href'],
+          details: ProductDetails.parse(document),
+        );
       }
 
       // Listado de resultados: elegir el producto cuyo título empieza por el identificador
@@ -48,12 +60,31 @@ class ScraperService {
         final title = product.querySelector('.woocommerce-loop-product__title')?.text ?? '';
         if (!_titleMatches(title, number)) continue;
         final img = product.querySelector('img.woo-entry-image-main') ?? product.querySelector('img');
-        return ProductInfo(title: _clean(title), imageUrl: _imageSrc(img));
+        final productUrl = product.querySelector('a.woocommerce-LoopProduct-link')?.attributes['href'];
+        return ProductInfo(
+          title: _clean(title),
+          imageUrl: _imageSrc(img),
+          productUrl: productUrl,
+          details: productUrl == null ? null : await _fetchDetails(productUrl),
+        );
       }
     } catch (e) {
       debugPrint('Error al obtener carátula para $identifier: $e');
     }
     return null;
+  }
+
+  /// Descarga la ficha del producto. Devuelve null si falla, sin perder nombre ni carátula.
+  static Future<ProductDetails?> _fetchDetails(String productUrl) async {
+    try {
+      final response = await http.get(Uri.parse(productUrl), headers: _headers);
+      if (response.statusCode != 200) return null;
+      final details = ProductDetails.parse(parse(response.body));
+      return details.isEmpty ? null : details;
+    } catch (e) {
+      debugPrint('Error al obtener la ficha $productUrl: $e');
+      return null;
+    }
   }
 
   static String? _clean(String text) {
