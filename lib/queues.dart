@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'models.dart';
 import 'playback.dart';
 import 'storage.dart';
+import 'volume.dart';
 import 'widgets.dart';
 
 String _title(SoundItem? sound, String fallback) =>
@@ -120,7 +121,7 @@ class _QueuesScreenState extends State<QueuesScreen> {
                       child: Card(
                         color: kCardColor,
                         child: ListTile(
-                          leading: const Icon(Icons.queue_music, color: kAccent),
+                          leading: Icon(queue.normalize ? Icons.equalizer : Icons.queue_music, color: kAccent),
                           title: Text(queue.name, style: const TextStyle(fontWeight: FontWeight.bold)),
                           subtitle: Text(
                             queue.steps.isEmpty ? 'Sin pasos' : summary,
@@ -161,6 +162,59 @@ class _QueueEditorScreenState extends State<QueueEditorScreen> {
 
   List<QueueStep> get _steps => widget.queue.steps;
   Map<String, SoundItem> get _byName => {for (final s in widget.sounds) s.fileName: s};
+
+  final Set<String> _measuring = {};
+
+  /// Sonoridad del primer paso disponible: la referencia de la normalización.
+  double? get _referenceLufs {
+    for (final step in _steps) {
+      final sound = _byName[step.fileName];
+      if (sound != null) return sound.loudness;
+    }
+    return null;
+  }
+
+  SoundItem? get _firstSound {
+    for (final step in _steps) {
+      final sound = _byName[step.fileName];
+      if (sound != null) return sound;
+    }
+    return null;
+  }
+
+  /// Mide los sonidos de la cola que aún no tienen sonoridad (normalmente ya están medidos en segundo plano).
+  Future<void> _ensureLoudness() async {
+    if (!widget.queue.normalize) return;
+    final byName = _byName;
+    final pending = {
+      for (final step in _steps)
+        if (byName[step.fileName] case final sound? when sound.loudness == null && !_measuring.contains(sound.fileName))
+          sound,
+    };
+    if (pending.isEmpty) return;
+    setState(() => _measuring.addAll(pending.map((s) => s.fileName)));
+    for (final sound in pending) {
+      final lufs = await DeviceVolume.measureLoudness(sound.filePath);
+      sound.loudness = lufs ?? double.nan;
+      if (mounted) setState(() => _measuring.remove(sound.fileName));
+    }
+    widget.playback.onSoundsChanged?.call();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _ensureLoudness();
+  }
+
+  String _offsetLabel(SoundItem sound, int index) {
+    if (_measuring.contains(sound.fileName) || sound.loudness == null) return 'analizando…';
+    final offset = widget.queue.offsetDb(sound, _referenceLufs);
+    if (offset == null) return 'sin ajuste';
+    if (sound == _firstSound) return 'referencia';
+    if (offset.abs() < 0.05) return '0 dB';
+    return '${offset > 0 ? '+' : '−'}${offset.abs().toStringAsFixed(1).replaceAll('.', ',')} dB';
+  }
 
   @override
   void dispose() {
@@ -227,7 +281,9 @@ class _QueueEditorScreenState extends State<QueueEditorScreen> {
         ),
       ),
     );
-    if (sound != null) setState(() => _steps.add(QueueStep(fileName: sound.fileName)));
+    if (sound == null) return;
+    setState(() => _steps.add(QueueStep(fileName: sound.fileName)));
+    _ensureLoudness();
   }
 
   Widget _stepTile(int index) {
@@ -270,7 +326,8 @@ class _QueueEditorScreenState extends State<QueueEditorScreen> {
                         ? 'Sonido no disponible (se saltará)'
                         : infinite
                             ? 'En bucle hasta que pares'
-                            : '${step.repeats == 1 ? '1 vez' : '${step.repeats} veces'} · Vol ${(sound.volumePreset * 100).round()}%',
+                            : '${step.repeats == 1 ? '1 vez' : '${step.repeats} veces'} · '
+                                '${widget.queue.normalize ? _offsetLabel(sound, index) : 'Vol ${(sound.volumePreset * 100).round()}%'}',
                     style: TextStyle(fontSize: 12, color: sound == null ? Colors.orangeAccent : Colors.white54),
                   ),
                 ],
@@ -342,6 +399,37 @@ class _QueueEditorScreenState extends State<QueueEditorScreen> {
               decoration: const InputDecoration(labelText: 'Nombre de la cola', border: OutlineInputBorder()),
             ),
           ),
+          SwitchListTile(
+            contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+            secondary: const Icon(Icons.equalizer),
+            title: const Text('Normalizar volumen'),
+            subtitle: const Text('Todos los sonidos igual de fuertes, sin alterar el sonido'),
+            value: widget.queue.normalize,
+            onChanged: (v) {
+              setState(() {
+                widget.queue.normalize = v;
+                widget.queue.volume ??= _firstSound?.volumePreset ?? 0.1;
+              });
+              _ensureLoudness();
+            },
+          ),
+          if (widget.queue.normalize)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: FineVolumeSlider(
+                value: widget.queue.volume ?? _firstSound?.volumePreset ?? 0.1,
+                onChanged: (v) => setState(() => widget.queue.volume = v),
+              ),
+            ),
+          if (widget.queue.normalize)
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 4, 16, 0),
+              child: Text(
+                'Volumen único de la cola (los presets de cada sonido no se usan). El primer paso suena como '
+                'solo a este volumen y los demás se igualan a él. En altavoces WiFi no se aplica el ajuste en dB.',
+                style: TextStyle(fontSize: 12, color: Colors.white54),
+              ),
+            ),
           if (_steps.isNotEmpty)
             const Padding(
               padding: EdgeInsets.fromLTRB(16, 8, 16, 0),

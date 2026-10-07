@@ -61,6 +61,15 @@ class CastNative {
   static Future<void> startService(String deviceName) => _invoke('startService', {'name': deviceName});
   static Future<void> stopService() => _invoke('stopService');
   static Future<void> requestNotificationPermission() => _invoke('requestNotificationPermission');
+  static Future<void> openFullScreenIntentSettings() => _invoke('openFullScreenIntentSettings');
+
+  static Future<bool> canUseFullScreenIntent() async {
+    try {
+      return await _channel.invokeMethod<bool>('canUseFullScreenIntent') ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
 }
 
 class CastDiscovery {

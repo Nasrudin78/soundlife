@@ -344,7 +344,24 @@ class PlayerBar extends StatelessWidget {
         final sound = playback.currentSound;
         return AnimatedSize(
           duration: const Duration(milliseconds: 200),
-          child: sound == null
+          child: sound == null && playback.isAnalyzing
+              ? const Material(
+                  color: Color(0xFF1E1E1E),
+                  child: SafeArea(
+                    top: false,
+                    child: Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Row(
+                        children: [
+                          SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                          SizedBox(width: 12),
+                          Text('Analizando sonoridad…'),
+                        ],
+                      ),
+                    ),
+                  ),
+                )
+              : sound == null
               ? const SizedBox(width: double.infinity)
               : NowPlayingBar(
                   sound: sound,
@@ -508,6 +525,54 @@ class _CastSheetState extends State<CastSheet> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Deslizador de volumen al 1 %, con botones − y + para afinar con precisión.
+class FineVolumeSlider extends StatelessWidget {
+  final double value; // 0.0–1.0
+  final ValueChanged<double> onChanged;
+
+  const FineVolumeSlider({super.key, required this.value, required this.onChanged});
+
+  static double _snap(double v) => (v.clamp(0.0, 1.0) * 100).round() / 100;
+
+  void _nudge(int delta) {
+    final next = ((value * 100).round() + delta).clamp(0, 100) / 100;
+    if (next != value) onChanged(next);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final percent = (value * 100).round();
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          children: [
+            IconButton(
+              tooltip: '−1 %',
+              icon: const Icon(Icons.remove_circle_outline),
+              onPressed: percent > 0 ? () => _nudge(-1) : null,
+            ),
+            Expanded(
+              child: Slider(
+                value: value.clamp(0.0, 1.0),
+                divisions: 100,
+                label: '$percent%',
+                onChanged: (v) => onChanged(_snap(v)),
+              ),
+            ),
+            IconButton(
+              tooltip: '+1 %',
+              icon: const Icon(Icons.add_circle_outline),
+              onPressed: percent < 100 ? () => _nudge(1) : null,
+            ),
+          ],
+        ),
+        Text('$percent%', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+      ],
     );
   }
 }

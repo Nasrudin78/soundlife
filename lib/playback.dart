@@ -119,8 +119,45 @@ class PlaybackController extends ChangeNotifier {
       }
     }
     if (entries.isEmpty) return;
+    if (queue.normalize) await _measureMissing({for (final e in entries) e.sound});
+    _referenceLufs = queue.normalize ? entries.first.sound.loudness : null;
     await _load(entries, queue: queue);
   }
+
+  // ---------------------------------------------------------------- Normalización de colas
+
+  double? _referenceLufs; // sonoridad del primer paso de la cola normalizada
+  bool _analyzing = false;
+  bool get isAnalyzing => _analyzing;
+
+  /// Se llama tras medir la sonoridad de algún sonido, para guardarla.
+  VoidCallback? onSoundsChanged;
+
+  Future<void> _measureMissing(Set<SoundItem> sounds) async {
+    final missing = sounds.where((s) => s.loudness == null).toList();
+    if (missing.isEmpty) return;
+    _analyzing = true;
+    notifyListeners();
+    for (final sound in missing) {
+      sound.loudness = await DeviceVolume.measureLoudness(sound.filePath);
+      debugPrint('Sonoridad ${sound.identifier}: ${sound.loudness?.toStringAsFixed(1)} LUFS');
+    }
+    _analyzing = false;
+    notifyListeners();
+    onSoundsChanged?.call();
+  }
+
+  /// Volumen de una entrada: el de la cola con su ajuste en dB si está normalizada, o el preset del sonido.
+  ({double volume, double offsetDb}) _volumeFor(_Entry entry) {
+    final queue = _queue;
+    if (queue == null || !queue.normalize) return (volume: entry.sound.volumePreset, offsetDb: 0.0);
+    return (
+      volume: queue.volume ?? _entries.first.sound.volumePreset,
+      offsetDb: queue.offsetDb(entry.sound, _referenceLufs) ?? 0.0,
+    );
+  }
+
+  _Entry? get _currentEntry => _index != null && _index! < _entries.length ? _entries[_index!] : null;
 
   Future<void> _load(List<_Entry> entries, {required SoundQueue? queue}) async {
     _entries = entries;
@@ -157,9 +194,16 @@ class PlaybackController extends ChangeNotifier {
     if (entry.repeats == 0) await _player.setLoopMode(LoopMode.one);
     // Cada paso nuevo suena con el volumen del preset de su sonido (aunque se repita el mismo sonido)
     if (previous == null || previous.stepIndex != entry.stepIndex) {
-      await DeviceVolume.set(entry.sound.volumePreset);
+      final v = _volumeFor(entry);
+      await _setLocalVolume(v.volume, offsetDb: v.offsetDb);
     }
     notifyListeners();
+  }
+
+  /// Volumen fino en el móvil: paso del sistema más la ganancia del reproductor.
+  Future<void> _setLocalVolume(double volume, {double offsetDb = 0}) async {
+    final gain = await DeviceVolume.set(volume, offsetDb: offsetDb);
+    await _player.setVolume(gain);
   }
 
   int? _nextStepStart(int index) {
@@ -195,10 +239,11 @@ class PlaybackController extends ChangeNotifier {
   }
 
   Future<void> resume() async {
-    final sound = currentSound;
+    final entry = _currentEntry;
+    final v = entry == null ? null : _volumeFor(entry);
     if (_renderer != null) {
       await _remote(() async {
-        if (sound != null) await _renderer!.setVolume(sound.volumePreset);
+        if (v != null) await _renderer!.setVolume(v.volume);
         await _renderer!.play();
       });
       if (_renderer?.quietPolling == true) {
@@ -209,7 +254,7 @@ class PlaybackController extends ChangeNotifier {
       _paused = false;
       notifyListeners();
     } else {
-      if (sound != null) await DeviceVolume.set(sound.volumePreset);
+      if (v != null) await _setLocalVolume(v.volume, offsetDb: v.offsetDb);
       unawaited(_player.play());
     }
   }
@@ -223,12 +268,24 @@ class PlaybackController extends ChangeNotifier {
     _clear();
   }
 
+  Timer? _previewTimer;
+
+  /// Suena [sound] unos segundos a [volume], para probar el volumen de una alarma.
+  Future<void> preview(SoundItem sound, double volume, {Duration duration = const Duration(seconds: 10)}) async {
+    _previewTimer?.cancel();
+    await playSound(sound);
+    await previewVolume(volume);
+    _previewTimer = Timer(duration, () {
+      if (isCurrent(sound) && _queue == null) stop();
+    });
+  }
+
   /// Volumen en vivo mientras se mueve el deslizador del preset.
   Future<void> previewVolume(double volume) async {
     if (_renderer != null) {
       await _remote(() => _renderer!.setVolume(volume));
     } else {
-      await DeviceVolume.set(volume);
+      await _setLocalVolume(volume);
     }
   }
 
@@ -305,7 +362,8 @@ class PlaybackController extends ChangeNotifier {
     await _remote(() async {
       await _renderer!.load(entry.sound);
       if (forceVolume || previous == null || previous.stepIndex != entry.stepIndex) {
-        await _renderer!.setVolume(entry.sound.volumePreset);
+        // En altavoces WiFi solo se envía el volumen: su curva es desconocida y no se aplica el ajuste en dB
+        await _renderer!.setVolume(_volumeFor(entry).volume);
       }
       if (autoplay) await _renderer!.play();
     });

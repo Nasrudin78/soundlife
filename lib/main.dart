@@ -1,8 +1,13 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:alarm/alarm.dart';
+import 'package:alarm/utils/alarm_set.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'alarms.dart';
 import 'details.dart';
 import 'files.dart';
 import 'models.dart';
@@ -10,6 +15,7 @@ import 'playback.dart';
 import 'queues.dart';
 import 'storage.dart';
 import 'scraper.dart';
+import 'volume.dart';
 import 'widgets.dart';
 
 Future<void> main() async {
@@ -20,8 +26,12 @@ Future<void> main() async {
     androidNotificationChannelName: 'Reproducción',
     androidNotificationIcon: 'mipmap/launcher_icon',
   );
+  // Alarmas nativas: suenan aunque la app esté cerrada
+  await Alarm.init();
   runApp(const SoundLifeApp());
 }
+
+final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
 
 class SoundLifeApp extends StatelessWidget {
   const SoundLifeApp({super.key});
@@ -29,7 +39,12 @@ class SoundLifeApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: rootNavigatorKey,
       title: 'SoundLife',
+      // Selectores de hora, diálogos del sistema, etc. en español
+      locale: const Locale('es', 'ES'),
+      supportedLocales: const [Locale('es', 'ES')],
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
       theme: ThemeData(
         brightness: Brightness.dark,
         primarySwatch: Colors.blueGrey,
@@ -74,6 +89,8 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _playback.addListener(_onPlaybackChanged);
+    _ringingSub = Alarm.ringing.listen(_onRinging);
+    _playback.onSoundsChanged = () => _storageService.saveSounds(_sounds);
     _playback.onCastError = (message) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
     };
@@ -90,6 +107,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _playback.removeListener(_onPlaybackChanged);
+    _ringingSub?.cancel();
     _playback.dispose();
     super.dispose();
   }
@@ -108,6 +126,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     if (migrated) await _storageService.saveSounds(sounds);
 
+    AlarmScheduler.instance.updateSounds(sounds);
+    unawaited(AlarmScheduler.instance.sync());
     setState(() {
       _sounds = sounds;
       _isLoading = false;
@@ -117,6 +137,29 @@ class _HomeScreenState extends State<HomeScreen> {
     });
     // Primera vez con esta versión: también se descargan las fichas de toda la biblioteca
     _fetchCovers(sounds.where((s) => s.coverPath == null || s.title == null || s.detailsPath == null).toList());
+    _measureLoudness();
+  }
+
+  bool _measuring = false;
+
+  /// Mide en segundo plano, de uno en uno, la sonoridad (LUFS) de los sonidos que aún no la tienen.
+  /// Se usa para normalizar las colas; tarda unos segundos por audio y no bloquea nada.
+  Future<void> _measureLoudness() async {
+    if (_measuring) return;
+    _measuring = true;
+    try {
+      while (mounted) {
+        final next = _sounds.where((s) => s.loudness == null && !_missing.contains(s.filePath)).firstOrNull;
+        if (next == null) break;
+        final lufs = await DeviceVolume.measureLoudness(next.filePath);
+        debugPrint('Sonoridad ${next.identifier}: ${lufs?.toStringAsFixed(1)} LUFS');
+        // Sin medida (formato no soportado): se marca para no reintentar en bucle; la cola no lo corrige
+        next.loudness = lufs ?? double.nan;
+        await _storageService.saveSounds(_sounds);
+      }
+    } finally {
+      _measuring = false;
+    }
   }
 
   String _identifierOf(SoundItem sound) => ScraperService.extractIdentifier(
@@ -231,6 +274,8 @@ class _HomeScreenState extends State<HomeScreen> {
       _sounds = [..._sounds, ...added];
       _importing = false;
     });
+    AlarmScheduler.instance.updateSounds(_sounds);
+    _measureLoudness();
     await _storageService.saveSounds(_sounds);
     _fetchCovers(added);
   }
@@ -262,6 +307,35 @@ class _HomeScreenState extends State<HomeScreen> {
     ));
   }
 
+  void _openAlarms() {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => AlarmsScreen(playback: _playback, sounds: _sounds),
+    ));
+  }
+
+  // Pantallas de "alarma sonando" abiertas, por id de alarma
+  final Map<int, Route<void>> _ringingRoutes = {};
+  StreamSubscription<AlarmSet>? _ringingSub;
+
+  void _onRinging(AlarmSet set) {
+    final navigator = rootNavigatorKey.currentState;
+    if (navigator == null) return;
+    final ids = {for (final a in set.alarms) a.id};
+    for (final alarm in set.alarms) {
+      if (_ringingRoutes.containsKey(alarm.id)) continue;
+      final route = MaterialPageRoute<void>(builder: (_) => AlarmRingingScreen(alarm: alarm));
+      _ringingRoutes[alarm.id] = route;
+      navigator.push(route);
+    }
+    final stopped = _ringingRoutes.keys.where((id) => !ids.contains(id)).toList();
+    for (final id in stopped) {
+      final route = _ringingRoutes.remove(id)!;
+      if (route.isActive) navigator.removeRoute(route);
+    }
+    // Detenida desde la app o desde la notificación: reprogramar o desactivar
+    if (stopped.isNotEmpty) unawaited(AlarmScheduler.instance.sync());
+  }
+
   void _openQueues() {
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => QueuesScreen(playback: _playback, sounds: _sounds),
@@ -285,29 +359,14 @@ class _HomeScreenState extends State<HomeScreen> {
                 children: [
                   const Text('Configura el nivel de volumen por defecto para este sonido (Uso nocturno recomendado: bajo)'),
                   const SizedBox(height: 20),
-                  Row(
-                    children: [
-                      const Icon(Icons.volume_mute),
-                      Expanded(
-                        child: Slider(
-                          value: currentVolume,
-                          min: 0.0,
-                          max: 1.0,
-                          divisions: 20,
-                          label: '${(currentVolume * 100).round()}%',
-                          onChanged: (val) {
-                            setDialogState(() {
-                              currentVolume = val;
-                            });
-                            // Si este sonido está sonando, se oye el cambio en vivo (móvil o dispositivo remoto)
-                            if (isPlaying()) _playback.previewVolume(val);
-                          },
-                        ),
-                      ),
-                      const Icon(Icons.volume_up),
-                    ],
+                  FineVolumeSlider(
+                    value: currentVolume,
+                    onChanged: (val) {
+                      setDialogState(() => currentVolume = val);
+                      // Si este sonido está sonando, se oye el cambio en vivo (móvil o dispositivo remoto)
+                      if (isPlaying()) _playback.previewVolume(val);
+                    },
                   ),
-                  Text('${(currentVolume * 100).round()}%'),
                   const SizedBox(height: 8),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
@@ -462,6 +521,11 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             onPressed: () => CastSheet.show(context, _playback),
             tooltip: _playback.target == null ? 'Reproducir en otro dispositivo' : 'En ${_playback.target!.name}',
+          ),
+          IconButton(
+            icon: const Icon(Icons.alarm),
+            onPressed: _sounds.isEmpty ? null : _openAlarms,
+            tooltip: 'Alarmas',
           ),
           IconButton(
             icon: const Icon(Icons.queue_music),

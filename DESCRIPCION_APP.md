@@ -10,19 +10,31 @@ SoundLife es una app Flutter (pensada sobre todo para Android) que reproduce los
 3. **Nombre y carátula**: con ese código busca el producto en soundandlife.com. Guarda su **nombre**, que se muestra en minúsculas salvo el código (por ejemplo "BA07 rescate – ansiedad") en toda la app y en la notificación, y **descarga la imagen al móvil** (`covers/`), así que en modo avión también se ve. Si no lo encuentra en la web, muestra el nombre del fichero. Busca 4 sonidos a la vez y cada tarjeta se actualiza en cuanto llega su información. Arriba se ve "Cargando carátulas y nombres x/y". En el menú ⋮, "Actualizar fichas" vuelve a descargarlo todo.
 4. **Tocar una tarjeta**: reproduce el audio. Si se toca otra vez, se para, o se reanuda si estaba en pausa. Solo suena un audio a la vez. La barra de abajo tiene **Pausa/Reanudar** y **Stop**, que funcionan para todo.
 5. **Mantener pulsada una tarjeta**: abre el *preset* de ese sonido.
-   - **Volumen** (0–100 %, en pasos del 5 %): fija el **volumen multimedia del dispositivo**, igual que los botones físicos. 0 % es silencio y 100 % es el máximo del móvil. Los sonidos nuevos empiezan al **10 %**. Si el audio está sonando, el cambio se oye al mover el deslizador.
+   - **Volumen** (0–100 %, **en pasos del 1 %**, con botones − y + para afinar): fija el **volumen multimedia del dispositivo**, igual que los botones físicos. 0 % es silencio y 100 % es el máximo del móvil. Los sonidos nuevos empiezan al **10 %**. Si el audio está sonando, el cambio se oye al mover el deslizador.
+   - **Cómo se consigue el 1 %**: el móvil solo tiene 25 pasos de volumen multimedia (4 % cada uno). La app fija el paso del sistema inmediatamente superior y baja la ganancia del reproductor hasta el punto intermedio. Usa los dB reales de cada paso en la salida actual (`AudioManager.getStreamVolumeDb`). Los valores de antes (múltiplos de 5 %) dan exactamente el mismo paso que en versiones anteriores y ganancia 1, así que los presets guardados suenan igual.
    - **Loop mode**: al terminar, el audio vuelve a empezar.
 6. **Ficha del sonido** (botón ⓘ de la tarjeta): carátula grande, un **titular de una línea con para qué sirve** y los apartados **Descripción**, **Aplicaciones** y **Posología** completos, como en la web, con sus subtítulos, listas e imágenes (por ejemplo, el mapa 3D de frecuencias). Tiene botones para reproducir y abrir el preset.
    - Los datos salen de la ficha del producto en soundandlife.com. El titular es la primera frase del resumen corto que la web pone arriba.
    - La ficha se guarda en el móvil (`details/BAxx.json` y sus imágenes), así que en modo avión también se ve. Al abrir esta versión por primera vez, se descargan las fichas de toda la biblioteca. Si alguna falla, la propia ficha ofrece "Descargar ahora".
-7. **Colas** (botón ☰♪): encadenan sonidos, por ejemplo *BA07 ×1 → BA09 ×2 → BA07 ×N → BA50 ∞*.
+7. **Alarmas** (botón ⏰): despiertan con un sonido de la biblioteca.
+   - Cada alarma tiene hora, días (L M X J V S D, o una sola vez), sonido, volumen con el mismo deslizador fino de los presets, subida gradual (no, 1, 3 o 5 min) y tiempo de posponer (5, 10 o 15 min). "Probar 10 s" hace sonar el sonido a ese volumen.
+   - **Volumen aconsejado:** 15–20 % con 3 min de subida, con BA16 vitalidad mañanas, que es el valor por defecto de una alarma nueva.
+   - Usa el plugin `alarm`, que es nativo: alarma exacta de Android que suena aunque la app esté cerrada y que se mantiene tras reiniciar. Suena por el **volumen multimedia** (25 pasos y la misma escala que los presets, también por Bluetooth). La subida gradual se hace con la ganancia del reproductor, hasta el volumen elegido.
+   - Al sonar se abre una pantalla **sobre la pantalla de bloqueo** con la hora, la carátula y los botones **Detener** y **Posponer**. También se puede detener desde la notificación.
+   - Las alarmas de una sola vez se desactivan tras sonar. Las semanales se programan para su siguiente día al detenerlas y al abrir la app.
+8. **Colas** (botón ☰♪): encadenan sonidos, por ejemplo *BA07 ×1 → BA09 ×2 → BA07 ×N → BA50 ∞*.
    - Cada paso tiene su número de repeticiones. Solo el **último** puede quedarse en bucle infinito (∞).
    - Los pasos se reordenan arrastrándolos. Deslizando una cola hacia la izquierda se borra, y se puede deshacer.
    - Al empezar cada paso se aplica el volumen del preset de su sonido. Dentro de un mismo paso (sus repeticiones) no se vuelve a aplicar, por si has cambiado el volumen a mano. El *Loop mode* del preset no se usa en las colas: lo que manda son las repeticiones de cada paso.
    - Mientras suena, la barra de abajo muestra, por ejemplo, "Paso 2/4 · 1/2" y tiene un botón para saltar al paso siguiente.
+   - **Normalizar volumen** (interruptor en el editor): la cola usa un **volumen único** y todos los pasos suenan igual de fuertes. Los presets individuales no se usan.
+     - El primer paso suena exactamente como solo a ese volumen, y los demás se igualan a su sonoridad. Cada paso muestra su ajuste, por ejemplo "−3,2 dB".
+     - La app mide la sonoridad integrada de cada audio (**EBU R128**, LUFS) una sola vez, en segundo plano, y la guarda. Al reproducir aplica a cada audio una **ganancia constante**, como girar el mando de volumen: no comprime, no ecualiza y no cambia la dinámica ni el timbre.
+     - Un audio más flojo sube el paso de volumen del sistema y uno más fuerte baja la ganancia del reproductor, siempre dentro del 100 % del móvil, así que no satura. La corrección máxima es de ±20 dB.
+     - **En altavoces WiFi** (Sonos, GGMM…) se envía el volumen de la cola, pero no el ajuste en dB de cada audio, porque la curva de volumen de cada altavoz es desconocida. Por Bluetooth sí se aplica.
 
-8. **Enviar a otro dispositivo** (botón cast): ver la sección de abajo.
-9. **Menú ⋮**: "Actualizar fichas" (nombre, carátula y descripción) y la versión instalada, que se lee de `pubspec.yaml`. La barra de arriba muestra solo "SoundLife".
+9. **Enviar a otro dispositivo** (botón cast): ver la sección de abajo.
+10. **Menú ⋮**: "Actualizar fichas" (nombre, carátula y descripción) y la versión instalada, que se lee de `pubspec.yaml`. La barra de arriba muestra solo "SoundLife".
 
 ## Pantalla apagada y modo avión
 
@@ -56,13 +68,15 @@ Con el móvil conectado al **WiFi de casa** (no hace falta internet), el botón 
 | `lib/playback.dart` | `PlaybackController`: único reproductor, en el móvil (`just_audio`) o en un dispositivo DLNA. Sonidos sueltos y colas, pausa y stop |
 | `lib/queues.dart` | Lista de colas y editor de pasos |
 | `lib/details.dart` | Pantalla de la ficha del sonido |
+| `lib/alarms.dart` | Alarmas: modelo, programación con el plugin `alarm`, lista, editor y pantalla al sonar |
 | `lib/product_details.dart` | Modelo de la ficha y extracción de sus apartados del HTML de la web |
 | `lib/widgets.dart` | Tarjetas, carátulas con carga animada, esqueletos y barra de reproducción |
 | `lib/files.dart` | Guarda audios, carátulas y fichas en el almacenamiento de la app |
 | `lib/models.dart` | `SoundItem` (ruta, código BA, nombre de la web, carátula, volumen, loop), `SoundQueue` y `QueueStep` |
 | `lib/storage.dart` | Guarda sonidos (`sound_items_v1`) y colas (`sound_queues_v1`) en `SharedPreferences` como JSON |
 | `lib/scraper.dart` | Detecta el código BA y saca de soundandlife.com el nombre y la carátula del producto (de los resultados de búsqueda o de la ficha) |
-| `lib/volume.dart` | `DeviceVolume`: canal `soundlife/volume` hacia el código nativo |
+| `lib/volume.dart` | `VolumeCurve` (porcentaje → paso del sistema + ganancia, compatible con los presets antiguos, y ajustes en dB para normalizar) y `DeviceVolume` (canal `soundlife/volume`) |
+| `android/.../LoudnessMeter.kt` | Sonoridad integrada EBU R128 (ponderación K, puertas de −70 LUFS y −10 LU). Los WAV se leen directamente y el resto se decodifica con MediaCodec. En audios largos se analizan 20 ventanas de 15 s |
 | `lib/cast.dart` | Búsqueda SSDP de reproductores, servidor HTTP local (`MediaServer`) y control remoto (`CastRenderer`): `DlnaRenderer` (SOAP) y `LinkPlayRenderer` (API HTTP de LinkPlay) |
 | `android/.../CastService.kt` | Servicio en primer plano (`connectedDevice`) mientras se envía audio, con los bloqueos de WiFi y de CPU |
 | `android/.../MainActivity.kt` | Hereda de `AudioServiceActivity`. Canal de volumen (`AudioManager.setStreamVolume(STREAM_MUSIC, …)`) y canal `soundlife/cast` (bloqueo multicast, servicio y permiso de notificaciones) |
